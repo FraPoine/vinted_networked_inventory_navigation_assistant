@@ -117,7 +117,7 @@ async function handleSubmit(event) {
     }
 
     if (response.ok === true) {
-      setStatus("Items received by the background script.");
+      setStatus("Vinted page connected successfully.");
       return;
     }
 
