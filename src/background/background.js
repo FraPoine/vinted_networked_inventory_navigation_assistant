@@ -51,6 +51,89 @@ function validateSearchRequest(message) {
   };
 }
 
+const CATALOG_LISTING_KEYS = [
+  "itemId",
+  "itemUrl",
+  "imageUrl",
+  "imageAlt",
+  "descriptionTitle",
+  "descriptionSubtitle",
+  "priceText",
+  "totalPriceText",
+];
+
+const OPTIONAL_LISTING_FIELDS = [
+  "imageUrl",
+  "imageAlt",
+  "descriptionTitle",
+  "descriptionSubtitle",
+  "priceText",
+  "totalPriceText",
+];
+
+function isNullableNonEmptyString(value) {
+  return (
+    value === null ||
+    (typeof value === "string" && value.trim().length > 0)
+  );
+}
+
+function isValidCatalogListing(listing) {
+  if (
+    listing === null ||
+    typeof listing !== "object" ||
+    Array.isArray(listing) ||
+    Object.keys(listing).length !== CATALOG_LISTING_KEYS.length ||
+    !CATALOG_LISTING_KEYS.every((key) =>
+      Object.prototype.hasOwnProperty.call(listing, key),
+    ) ||
+    typeof listing.itemId !== "string" ||
+    !/^\d+$/.test(listing.itemId) ||
+    typeof listing.itemUrl !== "string" ||
+    !OPTIONAL_LISTING_FIELDS.every((field) =>
+      isNullableNonEmptyString(listing[field]),
+    )
+  ) {
+    return false;
+  }
+
+  try {
+    const itemUrl = new URL(listing.itemUrl);
+    const itemPathMatch = itemUrl.pathname.match(/^\/items\/(\d+)(?:-|\/|$)/);
+
+    return (
+      itemUrl.protocol === "https:" &&
+      itemUrl.hostname === "www.vinted.it" &&
+      itemPathMatch?.[1] === listing.itemId
+    );
+  } catch {
+    return false;
+  }
+}
+
+function hasUniqueListingIds(listings) {
+  return (
+    new Set(listings.map((listing) => listing.itemId)).size === listings.length
+  );
+}
+
+function validateCatalogResponse(response, expectedItemCount) {
+  return (
+    response !== null &&
+    typeof response === "object" &&
+    response.ok === true &&
+    Number.isInteger(response.itemCount) &&
+    response.itemCount === expectedItemCount &&
+    Number.isInteger(response.listingCount) &&
+    response.listingCount >= 0 &&
+    Array.isArray(response.listings) &&
+    response.listingCount === response.listings.length &&
+    response.listings.length > 0 &&
+    response.listings.every(isValidCatalogListing) &&
+    hasUniqueListingIds(response.listings)
+  );
+}
+
 async function handleCreateSearchRequest(message) {
   const validation = validateSearchRequest(message);
 
@@ -79,24 +162,6 @@ async function handleCreateSearchRequest(message) {
     if (
       response !== null &&
       typeof response === "object" &&
-      response.ok === true &&
-      Number.isInteger(response.itemCount) &&
-      response.itemCount === validation.items.length
-    ) {
-      console.log(
-        "NINA Vinted content script confirmed items:",
-        validation.items,
-      );
-
-      return {
-        ok: true,
-        itemCount: validation.items.length,
-      };
-    }
-
-    if (
-      response !== null &&
-      typeof response === "object" &&
       response.ok === false &&
       typeof response.error === "string" &&
       response.error.trim()
@@ -107,14 +172,27 @@ async function handleCreateSearchRequest(message) {
       };
     }
 
+    if (validateCatalogResponse(response, validation.items.length)) {
+      console.log(
+        "NINA background received Vinted catalog listings:",
+        response.listings,
+      );
+
+      return {
+        ok: true,
+        itemCount: validation.items.length,
+        listingCount: response.listings.length,
+      };
+    }
+
     console.error(
-      "NINA received an invalid response from the active tab content script.",
+      "NINA received invalid catalog data from the active tab content script.",
       response,
     );
 
     return {
       ok: false,
-      error: "NINA received an invalid response from the Vinted page.",
+      error: "NINA received invalid catalog data from the Vinted page.",
     };
   } catch (error) {
     console.error(

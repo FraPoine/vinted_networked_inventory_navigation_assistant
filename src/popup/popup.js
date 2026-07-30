@@ -116,8 +116,16 @@ async function handleSubmit(event) {
       return;
     }
 
-    if (response.ok === true) {
-      setStatus("Vinted page connected successfully.");
+    if (
+      response.ok === true &&
+      Number.isInteger(response.listingCount) &&
+      response.listingCount > 0
+    ) {
+      const listingLabel =
+        response.listingCount === 1 ? "listing" : "listings";
+      setStatus(
+        `Read ${response.listingCount} ${listingLabel} from the current Vinted catalog.`,
+      );
       return;
     }
 
