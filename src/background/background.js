@@ -3,12 +3,18 @@ console.log("NINA background script loaded.");
 const MESSAGE_TYPES = {
   CREATE_SEARCH_REQUEST: "CREATE_SEARCH_REQUEST",
   PREPARE_SEARCH: "PREPARE_SEARCH",
+  EXTRACT_ITEM_SELLER: "EXTRACT_ITEM_SELLER",
 };
 
 const RESULT_TYPES = {
   CATALOG_LISTINGS: "CATALOG_LISTINGS",
   ITEM_SELLER: "ITEM_SELLER",
+  FIRST_LISTING_ENRICHED: "FIRST_LISTING_ENRICHED",
 };
+
+const TEMPORARY_TAB_TIMEOUT_MS = 20_000;
+
+let isEnrichingFirstListing = false;
 
 browser.runtime.onInstalled.addListener((details) => {
   console.log(`NINA extension installed: ${details.reason}`);
@@ -203,6 +209,192 @@ function validateItemSellerResponse(response, expectedItemCount) {
   );
 }
 
+function validateDirectItemSellerResponse(response, expectedItemId) {
+  return (
+    response !== null &&
+    typeof response === "object" &&
+    response.ok === true &&
+    response.resultType === RESULT_TYPES.ITEM_SELLER &&
+    isValidItemSeller(response.itemSeller) &&
+    response.itemSeller.itemId === expectedItemId
+  );
+}
+
+function waitForTabComplete(tabId) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+
+    const cleanup = () => {
+      browser.tabs.onUpdated.removeListener(handleUpdated);
+      browser.tabs.onRemoved.removeListener(handleRemoved);
+      clearTimeout(timeoutId);
+    };
+
+    const settle = (error) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    };
+
+    const handleUpdated = (updatedTabId, changeInfo) => {
+      if (updatedTabId === tabId && changeInfo.status === "complete") {
+        settle();
+      }
+    };
+
+    const handleRemoved = (removedTabId) => {
+      if (removedTabId === tabId) {
+        settle(new Error("The temporary tab was closed before loading."));
+      }
+    };
+
+    const timeoutId = setTimeout(() => {
+      settle(new Error("The temporary tab did not finish loading in time."));
+    }, TEMPORARY_TAB_TIMEOUT_MS);
+
+    browser.tabs.onUpdated.addListener(handleUpdated);
+    browser.tabs.onRemoved.addListener(handleRemoved);
+
+    browser.tabs.get(tabId)
+      .then((tab) => {
+        if (tab.status === "complete") {
+          settle();
+        }
+      })
+      .catch((error) => settle(error));
+  });
+}
+
+async function closeTemporaryTab(temporaryTabId) {
+  if (!Number.isInteger(temporaryTabId)) {
+    return;
+  }
+
+  try {
+    await browser.tabs.remove(temporaryTabId);
+  } catch (error) {
+    console.error(
+      "NINA could not close the temporary Vinted item tab.",
+      error,
+    );
+  }
+}
+
+async function extractSellerFromTemporaryTab(firstListing, windowId) {
+  let temporaryTabId = null;
+
+  try {
+    const createOptions = {
+      url: firstListing.itemUrl,
+      active: false,
+    };
+
+    if (Number.isInteger(windowId)) {
+      createOptions.windowId = windowId;
+    }
+
+    const temporaryTab = await browser.tabs.create(createOptions);
+
+    if (!Number.isInteger(temporaryTab.id)) {
+      throw new Error("The temporary tab has no valid ID.");
+    }
+
+    temporaryTabId = temporaryTab.id;
+    await waitForTabComplete(temporaryTabId);
+
+    const sellerResponse = await browser.tabs.sendMessage(temporaryTabId, {
+      type: MESSAGE_TYPES.EXTRACT_ITEM_SELLER,
+    });
+
+    if (
+      !validateDirectItemSellerResponse(sellerResponse, firstListing.itemId)
+    ) {
+      console.error(
+        "NINA received invalid seller data from the temporary item tab.",
+        sellerResponse,
+      );
+      throw new Error("The temporary item tab returned invalid seller data.");
+    }
+
+    return sellerResponse.itemSeller;
+  } finally {
+    await closeTemporaryTab(temporaryTabId);
+  }
+}
+
+async function enrichFirstCatalogListing(
+  catalogResponse,
+  requestedItemCount,
+  windowId,
+) {
+  if (isEnrichingFirstListing) {
+    return {
+      ok: false,
+      error: "NINA is already processing a catalog listing.",
+    };
+  }
+
+  isEnrichingFirstListing = true;
+
+  try {
+    const firstListing = catalogResponse.listings[0];
+
+    if (!isValidCatalogListing(firstListing)) {
+      console.error(
+        "NINA could not validate the first catalog listing.",
+        firstListing,
+      );
+      throw new Error("The first catalog listing is invalid.");
+    }
+
+    const itemSeller = await extractSellerFromTemporaryTab(
+      firstListing,
+      windowId,
+    );
+    const enrichedListing = {
+      ...firstListing,
+      sellerId: itemSeller.sellerId,
+      sellerName: itemSeller.sellerName,
+      sellerUrl: itemSeller.sellerUrl,
+    };
+
+    console.log(
+      "NINA enriched the first catalog listing:",
+      enrichedListing,
+    );
+
+    return {
+      ok: true,
+      resultType: RESULT_TYPES.FIRST_LISTING_ENRICHED,
+      itemCount: requestedItemCount,
+      listingCount: catalogResponse.listings.length,
+      itemId: enrichedListing.itemId,
+      sellerName: enrichedListing.sellerName,
+    };
+  } catch (error) {
+    console.error(
+      "NINA could not enrich the first Vinted catalog listing.",
+      error,
+    );
+
+    return {
+      ok: false,
+      error: "NINA could not read the seller for the first catalog listing.",
+    };
+  } finally {
+    isEnrichingFirstListing = false;
+  }
+}
+
 async function handleCreateSearchRequest(message) {
   const validation = validateSearchRequest(message);
 
@@ -247,12 +439,11 @@ async function handleCreateSearchRequest(message) {
         response.listings,
       );
 
-      return {
-        ok: true,
-        resultType: RESULT_TYPES.CATALOG_LISTINGS,
-        itemCount: validation.items.length,
-        listingCount: response.listings.length,
-      };
+      return enrichFirstCatalogListing(
+        response,
+        validation.items.length,
+        activeTab.windowId,
+      );
     }
 
     if (validateItemSellerResponse(response, validation.items.length)) {

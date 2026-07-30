@@ -2,6 +2,7 @@ console.log("NINA content script loaded on Vinted.");
 
 const MESSAGE_TYPES = {
   PREPARE_SEARCH: "PREPARE_SEARCH",
+  EXTRACT_ITEM_SELLER: "EXTRACT_ITEM_SELLER",
 };
 
 const RESULT_TYPES = {
@@ -423,15 +424,7 @@ function handlePrepareSearch(items) {
   });
 }
 
-function handleMessage(message) {
-  if (
-    message === null ||
-    typeof message !== "object" ||
-    message.type !== MESSAGE_TYPES.PREPARE_SEARCH
-  ) {
-    return undefined;
-  }
-
+function handlePrepareSearchMessage(message) {
   const validation = validatePrepareSearch(message);
 
   if (!validation.ok) {
@@ -439,6 +432,57 @@ function handleMessage(message) {
   }
 
   return handlePrepareSearch(validation.items);
+}
+
+function handleExtractItemSellerMessage() {
+  const itemPage = readCurrentItemPage();
+
+  if (!itemPage) {
+    return Promise.resolve({
+      ok: false,
+      error: "Open a Vinted item page before continuing.",
+    });
+  }
+
+  const itemSeller = extractItemSeller(itemPage);
+
+  if (!itemSeller) {
+    console.warn(
+      "NINA could not extract a valid seller from the temporary item tab.",
+    );
+
+    return Promise.resolve({
+      ok: false,
+      error: "NINA could not find the seller on this Vinted item page.",
+    });
+  }
+
+  console.log(
+    "NINA extracted seller for temporary item tab:",
+    itemSeller,
+  );
+
+  return Promise.resolve({
+    ok: true,
+    resultType: RESULT_TYPES.ITEM_SELLER,
+    itemSeller,
+  });
+}
+
+function handleMessage(message) {
+  if (message === null || typeof message !== "object") {
+    return undefined;
+  }
+
+  if (message.type === MESSAGE_TYPES.PREPARE_SEARCH) {
+    return handlePrepareSearchMessage(message);
+  }
+
+  if (message.type === MESSAGE_TYPES.EXTRACT_ITEM_SELLER) {
+    return handleExtractItemSellerMessage();
+  }
+
+  return undefined;
 }
 
 browser.runtime.onMessage.addListener(handleMessage);
