@@ -10,7 +10,7 @@ const MESSAGE_TYPES = {
 const RESULT_TYPES = {
   CATALOG_LISTINGS: "CATALOG_LISTINGS",
   ITEM_SELLER: "ITEM_SELLER",
-  FIRST_LISTING_ENRICHED: "FIRST_LISTING_ENRICHED",
+  CATALOG_BATCH_ENRICHED: "CATALOG_BATCH_ENRICHED",
 };
 
 let nextItemId = 3;
@@ -93,6 +93,13 @@ function setStatus(message, isError = false) {
   status.classList.toggle("error", isError);
 }
 
+function formatCatalogBatchStatus(response) {
+  const listingLabel = response.processedCount === 1 ? "listing" : "listings";
+  const sellerLabel = response.sellerCount === 1 ? "seller" : "sellers";
+
+  return `Processed ${response.processedCount} ${listingLabel}: ${response.successCount} succeeded, ${response.failureCount} failed, ${response.sellerCount} unique ${sellerLabel}.`;
+}
+
 async function handleSubmit(event) {
   event.preventDefault();
 
@@ -124,19 +131,27 @@ async function handleSubmit(event) {
 
     if (
       response.ok === true &&
-      response.resultType === RESULT_TYPES.FIRST_LISTING_ENRICHED &&
+      response.resultType === RESULT_TYPES.CATALOG_BATCH_ENRICHED &&
       Number.isInteger(response.itemCount) &&
       response.itemCount >= 2 &&
       Number.isInteger(response.listingCount) &&
       response.listingCount > 0 &&
-      typeof response.itemId === "string" &&
-      /^\d+$/.test(response.itemId) &&
-      typeof response.sellerName === "string" &&
-      response.sellerName.trim().length > 0
+      Number.isInteger(response.processedCount) &&
+      response.processedCount >= 1 &&
+      response.processedCount <= 5 &&
+      response.processedCount <= response.listingCount &&
+      Number.isInteger(response.successCount) &&
+      response.successCount > 0 &&
+      response.successCount <= response.processedCount &&
+      Number.isInteger(response.failureCount) &&
+      response.failureCount >= 0 &&
+      response.successCount + response.failureCount ===
+        response.processedCount &&
+      Number.isInteger(response.sellerCount) &&
+      response.sellerCount > 0 &&
+      response.sellerCount <= response.successCount
     ) {
-      setStatus(
-        `Read seller ${response.sellerName} for the first catalog listing.`,
-      );
+      setStatus(formatCatalogBatchStatus(response));
       return;
     }
 

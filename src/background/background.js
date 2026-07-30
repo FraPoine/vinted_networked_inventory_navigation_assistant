@@ -9,12 +9,13 @@ const MESSAGE_TYPES = {
 const RESULT_TYPES = {
   CATALOG_LISTINGS: "CATALOG_LISTINGS",
   ITEM_SELLER: "ITEM_SELLER",
-  FIRST_LISTING_ENRICHED: "FIRST_LISTING_ENRICHED",
+  CATALOG_BATCH_ENRICHED: "CATALOG_BATCH_ENRICHED",
 };
 
 const TEMPORARY_TAB_TIMEOUT_MS = 20_000;
+const MAX_LISTINGS_PER_RUN = 5;
 
-let isEnrichingFirstListing = false;
+let isEnrichingCatalogBatch = false;
 
 browser.runtime.onInstalled.addListener((details) => {
   console.log(`NINA extension installed: ${details.reason}`);
@@ -289,12 +290,12 @@ async function closeTemporaryTab(temporaryTabId) {
   }
 }
 
-async function extractSellerFromTemporaryTab(firstListing, windowId) {
+async function extractSellerFromTemporaryTab(listing, windowId) {
   let temporaryTabId = null;
 
   try {
     const createOptions = {
-      url: firstListing.itemUrl,
+      url: listing.itemUrl,
       active: false,
     };
 
@@ -315,9 +316,7 @@ async function extractSellerFromTemporaryTab(firstListing, windowId) {
       type: MESSAGE_TYPES.EXTRACT_ITEM_SELLER,
     });
 
-    if (
-      !validateDirectItemSellerResponse(sellerResponse, firstListing.itemId)
-    ) {
+    if (!validateDirectItemSellerResponse(sellerResponse, listing.itemId)) {
       console.error(
         "NINA received invalid seller data from the temporary item tab.",
         sellerResponse,
@@ -331,67 +330,131 @@ async function extractSellerFromTemporaryTab(firstListing, windowId) {
   }
 }
 
-async function enrichFirstCatalogListing(
+function addListingToSellerGroups(sellerGroups, enrichedListing) {
+  const {
+    sellerId,
+    sellerName,
+    sellerUrl,
+    ...catalogListing
+  } = enrichedListing;
+  const existingGroup = sellerGroups.get(sellerId);
+
+  if (existingGroup) {
+    existingGroup.listings.push(catalogListing);
+    return;
+  }
+
+  sellerGroups.set(sellerId, {
+    sellerId,
+    sellerName,
+    sellerUrl,
+    listings: [catalogListing],
+  });
+}
+
+function buildCatalogBatchResult(
+  listingsToProcess,
+  enrichedListings,
+  failures,
+) {
+  const sellerGroups = new Map();
+
+  for (const enrichedListing of enrichedListings) {
+    addListingToSellerGroups(sellerGroups, enrichedListing);
+  }
+
+  const sellers = Array.from(sellerGroups.values());
+
+  return {
+    processedCount: listingsToProcess.length,
+    successCount: enrichedListings.length,
+    failureCount: failures.length,
+    sellerCount: sellers.length,
+    sellers,
+    failures,
+  };
+}
+
+async function enrichCatalogBatch(
   catalogResponse,
   requestedItemCount,
   windowId,
 ) {
-  if (isEnrichingFirstListing) {
+  if (isEnrichingCatalogBatch) {
     return {
       ok: false,
-      error: "NINA is already processing a catalog listing.",
+      error: "NINA is already processing catalog listings.",
     };
   }
 
-  isEnrichingFirstListing = true;
+  isEnrichingCatalogBatch = true;
 
   try {
-    const firstListing = catalogResponse.listings[0];
+    const listingsToProcess = catalogResponse.listings.slice(
+      0,
+      MAX_LISTINGS_PER_RUN,
+    );
+    const enrichedListings = [];
+    const failures = [];
 
-    if (!isValidCatalogListing(firstListing)) {
-      console.error(
-        "NINA could not validate the first catalog listing.",
-        firstListing,
-      );
-      throw new Error("The first catalog listing is invalid.");
+    for (const listing of listingsToProcess) {
+      try {
+        if (!isValidCatalogListing(listing)) {
+          throw new Error("The catalog listing is invalid.");
+        }
+
+        const itemSeller = await extractSellerFromTemporaryTab(
+          listing,
+          windowId,
+        );
+        const enrichedListing = {
+          ...listing,
+          sellerId: itemSeller.sellerId,
+          sellerName: itemSeller.sellerName,
+          sellerUrl: itemSeller.sellerUrl,
+        };
+
+        enrichedListings.push(enrichedListing);
+      } catch (error) {
+        console.error(
+          `NINA could not enrich catalog listing ${listing.itemId}.`,
+          error,
+        );
+        failures.push({
+          itemId: listing.itemId,
+          itemUrl: listing.itemUrl,
+        });
+      }
     }
 
-    const itemSeller = await extractSellerFromTemporaryTab(
-      firstListing,
-      windowId,
+    const batchResult = buildCatalogBatchResult(
+      listingsToProcess,
+      enrichedListings,
+      failures,
     );
-    const enrichedListing = {
-      ...firstListing,
-      sellerId: itemSeller.sellerId,
-      sellerName: itemSeller.sellerName,
-      sellerUrl: itemSeller.sellerUrl,
-    };
 
-    console.log(
-      "NINA enriched the first catalog listing:",
-      enrichedListing,
-    );
+    console.log("NINA enriched Vinted catalog batch:", batchResult);
+
+    if (batchResult.successCount === 0) {
+      return {
+        ok: false,
+        error:
+          "NINA could not read sellers from the selected catalog listings.",
+      };
+    }
 
     return {
       ok: true,
-      resultType: RESULT_TYPES.FIRST_LISTING_ENRICHED,
+      resultType: RESULT_TYPES.CATALOG_BATCH_ENRICHED,
       itemCount: requestedItemCount,
       listingCount: catalogResponse.listings.length,
-      itemId: enrichedListing.itemId,
-      sellerName: enrichedListing.sellerName,
-    };
-  } catch (error) {
-    console.error(
-      "NINA could not enrich the first Vinted catalog listing.",
-      error,
-    );
-
-    return {
-      ok: false,
-      error: "NINA could not read the seller for the first catalog listing.",
+      processedCount: batchResult.processedCount,
+      successCount: batchResult.successCount,
+      failureCount: batchResult.failureCount,
+      sellerCount: batchResult.sellerCount,
     };
   } finally {
-    isEnrichingFirstListing = false;
+    isEnrichingCatalogBatch = false;
   }
 }
 
@@ -439,7 +502,7 @@ async function handleCreateSearchRequest(message) {
         response.listings,
       );
 
-      return enrichFirstCatalogListing(
+      return enrichCatalogBatch(
         response,
         validation.items.length,
         activeTab.windowId,
