@@ -10,7 +10,42 @@
     <main>
       <h1>NINA</h1>
       <p class="full-name">Networked Inventory Navigation Assistant</p>
-      <p>The extension has been loaded successfully.</p>
+      <p class="instruction">Enter at least two different items.</p>
+
+      <form id="item-form" novalidate>
+        <fieldset>
+          <legend>Items</legend>
+          <div id="item-fields">
+            <div class="item-field">
+              <label for="item-1">Item 1</label>
+              <input
+                id="item-1"
+                name="items"
+                type="text"
+                placeholder="e.g. black hoodie"
+                autocomplete="off"
+              />
+            </div>
+            <div class="item-field">
+              <label for="item-2">Item 2</label>
+              <input
+                id="item-2"
+                name="items"
+                type="text"
+                placeholder="e.g. white sneakers"
+                autocomplete="off"
+              />
+            </div>
+          </div>
+        </fieldset>
+
+        <div class="form-actions">
+          <button id="add-item" class="secondary" type="button">Add item</button>
+          <button class="primary" type="submit">Continue</button>
+        </div>
+
+        <p id="status" role="status" aria-live="polite"></p>
+      </form>
     </main>
     <script src="popup.js"></script>
   </body>
