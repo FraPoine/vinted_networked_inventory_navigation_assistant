@@ -4,6 +4,11 @@ const MESSAGE_TYPES = {
   PREPARE_SEARCH: "PREPARE_SEARCH",
 };
 
+const RESULT_TYPES = {
+  CATALOG_LISTINGS: "CATALOG_LISTINGS",
+  ITEM_SELLER: "ITEM_SELLER",
+};
+
 const CATALOG_SELECTORS = {
   primaryCards:
     '.new-item-box__container[data-testid^="product-item-id-"]',
@@ -17,6 +22,13 @@ const CATALOG_SELECTORS = {
   descriptionSubtitle: 'p[data-testid$="--description-subtitle"]',
   price: 'p[data-testid$="--price-text"]',
   totalPrice: 'span[data-testid="total-combined-price"]',
+};
+
+const ITEM_PAGE_SELECTORS = {
+  sellerName: '[data-testid="profile-username"]',
+  sellerCard: ".web_ui__Card__card",
+  itemSidebar: ".item-page-sidebar-content",
+  sellerLink: 'a[href*="/member/"]',
 };
 
 function normalizeItems(items) {
@@ -241,6 +253,176 @@ function extractVisibleCatalogListings() {
   return Array.from(listingsById.values());
 }
 
+function readCurrentItemPage() {
+  try {
+    const url = new URL(window.location.href);
+    const itemPathMatch = url.pathname.match(/^\/items\/(\d+)(?:-|\/|$)/);
+
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "www.vinted.it" ||
+      !itemPathMatch
+    ) {
+      return null;
+    }
+
+    url.search = "";
+    url.hash = "";
+
+    return {
+      itemId: itemPathMatch[1],
+      itemUrl: url.href,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function findSellerLink(sellerNameElement) {
+  const directLink = sellerNameElement.closest(ITEM_PAGE_SELECTORS.sellerLink);
+
+  if (directLink) {
+    return directLink;
+  }
+
+  const sellerCard = sellerNameElement.closest(ITEM_PAGE_SELECTORS.sellerCard);
+  const cardLink = sellerCard?.querySelector(ITEM_PAGE_SELECTORS.sellerLink);
+
+  if (cardLink) {
+    return cardLink;
+  }
+
+  const itemSidebar =
+    sellerNameElement.closest(ITEM_PAGE_SELECTORS.itemSidebar) ||
+    document.querySelector(ITEM_PAGE_SELECTORS.itemSidebar);
+
+  return itemSidebar?.querySelector(ITEM_PAGE_SELECTORS.sellerLink) ?? null;
+}
+
+function extractSellerIdentity(link) {
+  const href = link.getAttribute("href");
+
+  if (!href) {
+    return null;
+  }
+
+  try {
+    const url = new URL(href, window.location.origin);
+    const sellerPathMatch = url.pathname.match(
+      /^\/member\/(\d+)(?:-|\/|$)/,
+    );
+
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "www.vinted.it" ||
+      !sellerPathMatch
+    ) {
+      return null;
+    }
+
+    url.search = "";
+    url.hash = "";
+
+    return {
+      sellerId: sellerPathMatch[1],
+      sellerUrl: url.href,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function extractItemSeller(itemPage) {
+  const sellerNameElement = document.querySelector(
+    ITEM_PAGE_SELECTORS.sellerName,
+  );
+  const sellerName = sellerNameElement?.textContent?.trim();
+
+  if (!sellerNameElement || !sellerName) {
+    return null;
+  }
+
+  const sellerLink = findSellerLink(sellerNameElement);
+
+  if (!sellerLink) {
+    return null;
+  }
+
+  const sellerIdentity = extractSellerIdentity(sellerLink);
+
+  if (!sellerIdentity) {
+    return null;
+  }
+
+  return {
+    itemId: itemPage.itemId,
+    itemUrl: itemPage.itemUrl,
+    sellerId: sellerIdentity.sellerId,
+    sellerName,
+    sellerUrl: sellerIdentity.sellerUrl,
+  };
+}
+
+function handleCatalogPage(items) {
+  const listings = extractVisibleCatalogListings();
+
+  if (listings.length === 0) {
+    return Promise.resolve({
+      ok: false,
+      error: "NINA could not find loaded listings on this catalog page.",
+    });
+  }
+
+  console.log("NINA extracted Vinted catalog listings:", listings);
+
+  return Promise.resolve({
+    ok: true,
+    resultType: RESULT_TYPES.CATALOG_LISTINGS,
+    itemCount: items.length,
+    listingCount: listings.length,
+    listings,
+  });
+}
+
+function handleItemPage(items, itemPage) {
+  const itemSeller = extractItemSeller(itemPage);
+
+  if (!itemSeller) {
+    console.warn("NINA could not extract a valid seller from this item page.");
+
+    return Promise.resolve({
+      ok: false,
+      error: "NINA could not find the seller on this Vinted item page.",
+    });
+  }
+
+  console.log("NINA extracted Vinted item seller:", itemSeller);
+
+  return Promise.resolve({
+    ok: true,
+    resultType: RESULT_TYPES.ITEM_SELLER,
+    itemCount: items.length,
+    itemSeller,
+  });
+}
+
+function handlePrepareSearch(items) {
+  if (isCatalogPage()) {
+    return handleCatalogPage(items);
+  }
+
+  const itemPage = readCurrentItemPage();
+
+  if (itemPage) {
+    return handleItemPage(items, itemPage);
+  }
+
+  return Promise.resolve({
+    ok: false,
+    error: "Open a Vinted catalog or item page before continuing.",
+  });
+}
+
 function handleMessage(message) {
   if (
     message === null ||
@@ -256,30 +438,7 @@ function handleMessage(message) {
     return Promise.resolve(validation);
   }
 
-  if (!isCatalogPage()) {
-    return Promise.resolve({
-      ok: false,
-      error: "Open a Vinted catalog page before continuing.",
-    });
-  }
-
-  const listings = extractVisibleCatalogListings();
-
-  if (listings.length === 0) {
-    return Promise.resolve({
-      ok: false,
-      error: "NINA could not find loaded listings on this catalog page.",
-    });
-  }
-
-  console.log("NINA extracted Vinted catalog listings:", listings);
-
-  return Promise.resolve({
-    ok: true,
-    itemCount: validation.items.length,
-    listingCount: listings.length,
-    listings,
-  });
+  return handlePrepareSearch(validation.items);
 }
 
 browser.runtime.onMessage.addListener(handleMessage);

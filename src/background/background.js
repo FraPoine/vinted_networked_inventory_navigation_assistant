@@ -5,6 +5,11 @@ const MESSAGE_TYPES = {
   PREPARE_SEARCH: "PREPARE_SEARCH",
 };
 
+const RESULT_TYPES = {
+  CATALOG_LISTINGS: "CATALOG_LISTINGS",
+  ITEM_SELLER: "ITEM_SELLER",
+};
+
 browser.runtime.onInstalled.addListener((details) => {
   console.log(`NINA extension installed: ${details.reason}`);
 });
@@ -71,6 +76,14 @@ const OPTIONAL_LISTING_FIELDS = [
   "totalPriceText",
 ];
 
+const ITEM_SELLER_KEYS = [
+  "itemId",
+  "itemUrl",
+  "sellerId",
+  "sellerName",
+  "sellerUrl",
+];
+
 function isNullableNonEmptyString(value) {
   return (
     value === null ||
@@ -122,6 +135,7 @@ function validateCatalogResponse(response, expectedItemCount) {
     response !== null &&
     typeof response === "object" &&
     response.ok === true &&
+    response.resultType === RESULT_TYPES.CATALOG_LISTINGS &&
     Number.isInteger(response.itemCount) &&
     response.itemCount === expectedItemCount &&
     Number.isInteger(response.listingCount) &&
@@ -131,6 +145,61 @@ function validateCatalogResponse(response, expectedItemCount) {
     response.listings.length > 0 &&
     response.listings.every(isValidCatalogListing) &&
     hasUniqueListingIds(response.listings)
+  );
+}
+
+function isValidIdentityUrl(urlValue, pathPrefix, expectedId) {
+  if (typeof urlValue !== "string") {
+    return false;
+  }
+
+  try {
+    const url = new URL(urlValue);
+    const pathMatch = url.pathname.match(
+      new RegExp(`^/${pathPrefix}/(\\d+)(?:-|/|$)`),
+    );
+
+    return (
+      url.protocol === "https:" &&
+      url.hostname === "www.vinted.it" &&
+      url.search === "" &&
+      url.hash === "" &&
+      pathMatch?.[1] === expectedId
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isValidItemSeller(itemSeller) {
+  return (
+    itemSeller !== null &&
+    typeof itemSeller === "object" &&
+    !Array.isArray(itemSeller) &&
+    Object.keys(itemSeller).length === ITEM_SELLER_KEYS.length &&
+    ITEM_SELLER_KEYS.every((key) =>
+      Object.prototype.hasOwnProperty.call(itemSeller, key),
+    ) &&
+    typeof itemSeller.itemId === "string" &&
+    /^\d+$/.test(itemSeller.itemId) &&
+    isValidIdentityUrl(itemSeller.itemUrl, "items", itemSeller.itemId) &&
+    typeof itemSeller.sellerId === "string" &&
+    /^\d+$/.test(itemSeller.sellerId) &&
+    typeof itemSeller.sellerName === "string" &&
+    itemSeller.sellerName.trim().length > 0 &&
+    isValidIdentityUrl(itemSeller.sellerUrl, "member", itemSeller.sellerId)
+  );
+}
+
+function validateItemSellerResponse(response, expectedItemCount) {
+  return (
+    response !== null &&
+    typeof response === "object" &&
+    response.ok === true &&
+    response.resultType === RESULT_TYPES.ITEM_SELLER &&
+    Number.isInteger(response.itemCount) &&
+    response.itemCount === expectedItemCount &&
+    isValidItemSeller(response.itemSeller)
   );
 }
 
@@ -180,19 +249,35 @@ async function handleCreateSearchRequest(message) {
 
       return {
         ok: true,
+        resultType: RESULT_TYPES.CATALOG_LISTINGS,
         itemCount: validation.items.length,
         listingCount: response.listings.length,
       };
     }
 
+    if (validateItemSellerResponse(response, validation.items.length)) {
+      console.log(
+        "NINA background received Vinted item seller:",
+        response.itemSeller,
+      );
+
+      return {
+        ok: true,
+        resultType: RESULT_TYPES.ITEM_SELLER,
+        itemCount: validation.items.length,
+        itemId: response.itemSeller.itemId,
+        sellerName: response.itemSeller.sellerName,
+      };
+    }
+
     console.error(
-      "NINA received invalid catalog data from the active tab content script.",
+      "NINA received invalid page data from the active tab content script.",
       response,
     );
 
     return {
       ok: false,
-      error: "NINA received invalid catalog data from the Vinted page.",
+      error: "NINA received invalid page data from the Vinted page.",
     };
   } catch (error) {
     console.error(

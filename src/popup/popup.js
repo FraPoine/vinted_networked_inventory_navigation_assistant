@@ -7,6 +7,11 @@ const MESSAGE_TYPES = {
   CREATE_SEARCH_REQUEST: "CREATE_SEARCH_REQUEST",
 };
 
+const RESULT_TYPES = {
+  CATALOG_LISTINGS: "CATALOG_LISTINGS",
+  ITEM_SELLER: "ITEM_SELLER",
+};
+
 let nextItemId = 3;
 let isSubmitting = false;
 
@@ -118,6 +123,9 @@ async function handleSubmit(event) {
 
     if (
       response.ok === true &&
+      response.resultType === RESULT_TYPES.CATALOG_LISTINGS &&
+      Number.isInteger(response.itemCount) &&
+      response.itemCount >= 2 &&
       Number.isInteger(response.listingCount) &&
       response.listingCount > 0
     ) {
@@ -125,6 +133,22 @@ async function handleSubmit(event) {
         response.listingCount === 1 ? "listing" : "listings";
       setStatus(
         `Read ${response.listingCount} ${listingLabel} from the current Vinted catalog.`,
+      );
+      return;
+    }
+
+    if (
+      response.ok === true &&
+      response.resultType === RESULT_TYPES.ITEM_SELLER &&
+      Number.isInteger(response.itemCount) &&
+      response.itemCount >= 2 &&
+      typeof response.itemId === "string" &&
+      /^\d+$/.test(response.itemId) &&
+      typeof response.sellerName === "string" &&
+      response.sellerName.trim().length > 0
+    ) {
+      setStatus(
+        `Read seller ${response.sellerName} from the current Vinted item.`,
       );
       return;
     }
