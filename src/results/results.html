@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Matching sellers | NINA</title>
+    <link rel="stylesheet" href="results.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Matching sellers</h1>
+      <section id="empty-state" aria-labelledby="empty-title">
+        <h2 id="empty-title">No search has been completed yet.</h2>
+        <p>Your matching sellers and their listings will appear here.</p>
+      </section>
+      <section id="seller-results" aria-live="polite" hidden>
+        <h2>Seller matches</h2>
+        <div id="seller-list"></div>
+      </section>
+    </main>
+    <script src="results.js"></script>
+  </body>
+</html>

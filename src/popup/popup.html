@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NINA</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>NINA</h1>
+        <p>Find Vinted sellers who have all the items you want.</p>
+      </header>
+
+      <form id="search-form" novalidate>
+        <fieldset id="item-fields">
+          <legend>Items to find</legend>
+          <div class="field">
+            <label for="item-1">Item A</label>
+            <input id="item-1" name="items" type="text" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="item-2">Item B</label>
+            <input id="item-2" name="items" type="text" autocomplete="off" />
+          </div>
+        </fieldset>
+
+        <button id="add-item" class="secondary" type="button">Add item</button>
+        <button class="primary" type="submit">Find sellers</button>
+      </form>
+
+      <p id="status" role="status" aria-live="polite"></p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
