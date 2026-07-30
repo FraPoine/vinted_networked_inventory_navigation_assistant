@@ -5,11 +5,12 @@ const MESSAGE_TYPES = {
 };
 
 const CATALOG_SELECTORS = {
-  primaryItemLinks:
-    'a[data-testid^="product-item-id-"][data-testid$="--overlay-link"]',
-  fallbackItemLinks: 'a[href*="/items/"]',
+  primaryCards:
+    '.new-item-box__container[data-testid^="product-item-id-"]',
+  fallbackCards: '[data-testid^="product-item-id-"]',
+  primaryItemLink: 'a[data-testid$="--overlay-link"]',
+  fallbackItemLink: 'a[href*="/items/"]',
   gridItem: '[data-testid="grid-item"]',
-  cardContainer: ".new-item-box__container",
   image: 'img[data-testid$="--image--img"]',
   fallbackImage: "img",
   descriptionTitle: 'p[data-testid$="--description-title"]',
@@ -67,34 +68,60 @@ function isCatalogPage() {
   );
 }
 
-function getCanonicalItemLinks() {
-  const primaryLinks = Array.from(
-    document.querySelectorAll(CATALOG_SELECTORS.primaryItemLinks),
+function getCanonicalCards() {
+  const primaryCards = Array.from(
+    document.querySelectorAll(CATALOG_SELECTORS.primaryCards),
   );
 
-  if (primaryLinks.length > 0) {
-    return primaryLinks;
+  if (primaryCards.length > 0) {
+    return primaryCards;
   }
 
   return Array.from(
-    document.querySelectorAll(CATALOG_SELECTORS.fallbackItemLinks),
+    document.querySelectorAll(CATALOG_SELECTORS.fallbackCards),
   );
 }
 
-function findCardRoot(link) {
+function findItemLink(card) {
   return (
-    link.closest(CATALOG_SELECTORS.gridItem) ||
-    link.closest(CATALOG_SELECTORS.cardContainer) ||
-    link.parentElement
+    card.querySelector(CATALOG_SELECTORS.primaryItemLink) ||
+    card.querySelector(CATALOG_SELECTORS.fallbackItemLink)
   );
 }
 
-function extractItemId(link) {
-  const testId = link.getAttribute("data-testid");
-  const testIdMatch = testId?.match(/product-item-id-(\d+)--overlay-link/);
+function resolveCardRoot(card) {
+  const listingContentSelectors = [
+    CATALOG_SELECTORS.image,
+    CATALOG_SELECTORS.fallbackImage,
+    CATALOG_SELECTORS.descriptionTitle,
+    CATALOG_SELECTORS.descriptionSubtitle,
+    CATALOG_SELECTORS.price,
+    CATALOG_SELECTORS.totalPrice,
+  ];
+  const containsListingContent = listingContentSelectors.some((selector) =>
+    card.querySelector(selector),
+  );
 
-  if (testIdMatch) {
-    return testIdMatch[1];
+  if (containsListingContent) {
+    return card;
+  }
+
+  return card.closest(CATALOG_SELECTORS.gridItem) || card;
+}
+
+function extractItemId(card, link) {
+  const cardTestId = card.getAttribute("data-testid");
+  const cardTestIdMatch = cardTestId?.match(/product-item-id-(\d+)/);
+
+  if (cardTestIdMatch) {
+    return cardTestIdMatch[1];
+  }
+
+  const linkTestId = link.getAttribute("data-testid");
+  const linkTestIdMatch = linkTestId?.match(/product-item-id-(\d+)/);
+
+  if (linkTestIdMatch) {
+    return linkTestIdMatch[1];
   }
 
   const href = link.getAttribute("href");
@@ -157,20 +184,26 @@ function extractImageData(cardRoot) {
   };
 }
 
-function extractListing(link) {
-  const itemId = extractItemId(link);
+function extractListing(card) {
+  const link = findItemLink(card);
+
+  if (!link) {
+    return null;
+  }
+
+  const itemId = extractItemId(card, link);
 
   if (!itemId) {
     return null;
   }
 
   const itemUrl = extractItemUrl(link, itemId);
-  const cardRoot = findCardRoot(link);
 
-  if (!itemUrl || !cardRoot) {
+  if (!itemUrl) {
     return null;
   }
 
+  const cardRoot = resolveCardRoot(card);
   const { imageUrl, imageAlt } = extractImageData(cardRoot);
 
   return {
@@ -197,8 +230,8 @@ function extractListing(link) {
 function extractVisibleCatalogListings() {
   const listingsById = new Map();
 
-  for (const link of getCanonicalItemLinks()) {
-    const listing = extractListing(link);
+  for (const card of getCanonicalCards()) {
+    const listing = extractListing(card);
 
     if (listing && !listingsById.has(listing.itemId)) {
       listingsById.set(listing.itemId, listing);
