@@ -1,18 +1,21 @@
 {
   "manifest_version": 3,
   "name": "NINA",
-  "description": "Find Vinted sellers who have all the items you are looking for.",
+  "description": "Networked Inventory Navigation Assistant — a minimal Firefox extension shell.",
   "version": "0.1.0",
   "browser_specific_settings": {
     "gecko": {
       "id": "nina-dev@example.invalid"
     }
   },
-  "permissions": ["storage"],
-  "host_permissions": ["https://www.vinted.it/*"],
+  "icons": {
+    "48": "assets/icons/nina.svg"
+  },
   "action": {
     "default_title": "NINA",
-    "default_popup": "src/popup/popup.html"
+    "default_popup": "src/popup/popup.html",
+    "default_icon": "assets/icons/nina.svg",
+    "default_area": "navbar"
   },
   "background": {
     "scripts": ["src/background/background.js"]
@@ -20,7 +23,7 @@
   "content_scripts": [
     {
       "matches": ["https://www.vinted.it/*"],
-      "js": ["src/content/catalog-reader.js"]
+      "js": ["src/content/content.js"]
     }
   ]
 }

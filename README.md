@@ -1,37 +1,32 @@
 # NINA
 
-NINA (Networked Inventory Navigation Assistant) is a Firefox extension intended
-to help people find Vinted sellers who offer several requested items at once.
+NINA stands for **Networked Inventory Navigation Assistant**.
 
 ## Status
 
-Version 0.1.0 is an initial, functional WebExtension shell. It stores item
-requests locally but does not search Vinted or collect listing data.
+Version 0.1.0 implements Step 1: a minimal Firefox extension shell. It includes
+a toolbar popup, a background script, and a static content script for
+`https://www.vinted.it/*`.
 
 ## Repository structure
 
 ```text
 .
 ├── manifest.json
+├── README.md
+├── .gitignore
 ├── src/
-│   ├── background/background.js
-│   ├── content/catalog-reader.js
-│   ├── popup/
-│   └── results/
-├── assets/icons/
-└── docs/architecture.md
-```
-
-## Requirements
-
-- Firefox with Manifest V3 support
-- Node.js and npm for development checks
-- The `zip` command for archive creation
-
-Install development dependencies:
-
-```sh
-npm install
+│   ├── background/
+│   │   └── background.js
+│   ├── content/
+│   │   └── content.js
+│   └── popup/
+│       ├── popup.html
+│       ├── popup.css
+│       └── popup.js
+└── assets/
+    └── icons/
+        └── nina.svg
 ```
 
 ## Load temporarily in Firefox
@@ -39,25 +34,20 @@ npm install
 1. Open `about:debugging#/runtime/this-firefox`.
 2. Select **Load Temporary Add-on**.
 3. Choose this repository's `manifest.json`.
-4. Open NINA from the Firefox toolbar.
+4. Select the NINA icon in the Firefox toolbar to open the popup.
+5. On the extension entry in `about:debugging`, select **Inspect** to open the
+   background console. Verify that it contains
+   `NINA background script loaded.` The installation message also includes the
+   installation reason when the extension is installed.
+6. Open a page under `https://www.vinted.it/`, open that page's Developer Tools,
+   and verify that its console contains
+   `NINA content script loaded on Vinted.`
 
 Temporary extensions are removed when Firefox restarts. The manifest uses
 `nina-dev@example.invalid` as a development-only Firefox extension ID; replace
 it with a permanent, controlled ID before distribution.
 
-## Commands
+## Not implemented
 
-- `npm run lint` checks JavaScript with ESLint.
-- `npm run format` formats project files with Prettier.
-- `npm run format:check` checks formatting without changing files.
-- `npm run zip` creates `nina-0.1.0.zip` using the system `zip` command.
-
-## Version 0.1.0 limitations
-
-NINA does not yet inspect Vinted pages, call Vinted APIs, find sellers, or
-populate the results page. Searches remain only in Firefox local extension
-storage. The current content script only confirms that it is ready when sent a
-`PING` message.
-
-Development and use of NINA must respect Vinted's terms of service, privacy
-requirements, rate limits, and other technical restrictions.
+This step does not implement listing reading, DOM scraping, seller matching,
+Vinted API use, or storage.
