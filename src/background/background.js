@@ -3,19 +3,23 @@ console.log("NINA background script loaded.");
 const MESSAGE_TYPES = {
   CREATE_SEARCH_REQUEST: "CREATE_SEARCH_REQUEST",
   PREPARE_SEARCH: "PREPARE_SEARCH",
+  EXTRACT_CATALOG_LISTINGS: "EXTRACT_CATALOG_LISTINGS",
   EXTRACT_ITEM_SELLER: "EXTRACT_ITEM_SELLER",
 };
 
 const RESULT_TYPES = {
+  CATALOG_READY: "CATALOG_READY",
   CATALOG_LISTINGS: "CATALOG_LISTINGS",
   ITEM_SELLER: "ITEM_SELLER",
-  CATALOG_BATCH_ENRICHED: "CATALOG_BATCH_ENRICHED",
+  SELLER_INTERSECTION_COMPLETE: "SELLER_INTERSECTION_COMPLETE",
 };
 
 const TEMPORARY_TAB_TIMEOUT_MS = 20_000;
 const MAX_LISTINGS_PER_RUN = 5;
 
-let isEnrichingCatalogBatch = false;
+let isSearchingRequestedItems = false;
+
+class TemporaryTabCleanupError extends Error {}
 
 browser.runtime.onInstalled.addListener((details) => {
   console.log(`NINA extension installed: ${details.reason}`);
@@ -43,10 +47,10 @@ function validateSearchRequest(message) {
 
   const items = normalizeItems(message.items);
 
-  if (items.length < 2) {
+  if (items.length !== 2) {
     return {
       ok: false,
-      error: "At least two items are required.",
+      error: "Exactly two items are required.",
     };
   }
 
@@ -137,16 +141,25 @@ function hasUniqueListingIds(listings) {
   );
 }
 
-function validateCatalogResponse(response, expectedItemCount) {
+function validateCatalogReadyResponse(response) {
+  return (
+    response !== null &&
+    typeof response === "object" &&
+    response.ok === true &&
+    response.resultType === RESULT_TYPES.CATALOG_READY &&
+    Number.isInteger(response.itemCount) &&
+    response.itemCount === 2
+  );
+}
+
+function validateDirectCatalogResponse(response) {
   return (
     response !== null &&
     typeof response === "object" &&
     response.ok === true &&
     response.resultType === RESULT_TYPES.CATALOG_LISTINGS &&
-    Number.isInteger(response.itemCount) &&
-    response.itemCount === expectedItemCount &&
     Number.isInteger(response.listingCount) &&
-    response.listingCount >= 0 &&
+    response.listingCount > 0 &&
     Array.isArray(response.listings) &&
     response.listingCount === response.listings.length &&
     response.listings.length > 0 &&
@@ -284,9 +297,65 @@ async function closeTemporaryTab(temporaryTabId) {
     await browser.tabs.remove(temporaryTabId);
   } catch (error) {
     console.error(
-      "NINA could not close the temporary Vinted item tab.",
+      "NINA could not close the temporary Vinted tab.",
       error,
     );
+
+    try {
+      await browser.tabs.get(temporaryTabId);
+    } catch {
+      return;
+    }
+
+    throw new TemporaryTabCleanupError(
+      "The temporary Vinted tab is still open.",
+    );
+  }
+}
+
+function buildCatalogSearchUrl(requestedItem) {
+  const url = new URL("https://www.vinted.it/catalog");
+  url.searchParams.set("search_text", requestedItem);
+  return url.href;
+}
+
+async function extractCatalogFromTemporaryTab(requestedItem, windowId) {
+  let temporaryTabId = null;
+
+  try {
+    const createOptions = {
+      url: buildCatalogSearchUrl(requestedItem),
+      active: false,
+    };
+
+    if (Number.isInteger(windowId)) {
+      createOptions.windowId = windowId;
+    }
+
+    const temporaryTab = await browser.tabs.create(createOptions);
+
+    if (!Number.isInteger(temporaryTab.id)) {
+      throw new Error("The temporary catalog tab has no valid ID.");
+    }
+
+    temporaryTabId = temporaryTab.id;
+    await waitForTabComplete(temporaryTabId);
+
+    const catalogResponse = await browser.tabs.sendMessage(temporaryTabId, {
+      type: MESSAGE_TYPES.EXTRACT_CATALOG_LISTINGS,
+    });
+
+    if (!validateDirectCatalogResponse(catalogResponse)) {
+      console.error(
+        "NINA received invalid data from the temporary catalog tab.",
+        catalogResponse,
+      );
+      throw new Error("The temporary catalog tab returned invalid data.");
+    }
+
+    return catalogResponse;
+  } finally {
+    await closeTemporaryTab(temporaryTabId);
   }
 }
 
@@ -352,7 +421,9 @@ function addListingToSellerGroups(sellerGroups, enrichedListing) {
   });
 }
 
-function buildCatalogBatchResult(
+function buildCatalogSearchResult(
+  requestedItem,
+  catalogResponse,
   listingsToProcess,
   enrichedListings,
   failures,
@@ -366,6 +437,8 @@ function buildCatalogBatchResult(
   const sellers = Array.from(sellerGroups.values());
 
   return {
+    requestedItem,
+    catalogListingCount: catalogResponse.listings.length,
     processedCount: listingsToProcess.length,
     successCount: enrichedListings.length,
     failureCount: failures.length,
@@ -375,86 +448,183 @@ function buildCatalogBatchResult(
   };
 }
 
-async function enrichCatalogBatch(
+async function processCatalogSearch(
+  requestedItem,
   catalogResponse,
-  requestedItemCount,
   windowId,
 ) {
-  if (isEnrichingCatalogBatch) {
+  const listingsToProcess = catalogResponse.listings.slice(
+    0,
+    MAX_LISTINGS_PER_RUN,
+  );
+  const enrichedListings = [];
+  const failures = [];
+
+  for (const listing of listingsToProcess) {
+    try {
+      if (!isValidCatalogListing(listing)) {
+        throw new Error("The catalog listing is invalid.");
+      }
+
+      const itemSeller = await extractSellerFromTemporaryTab(
+        listing,
+        windowId,
+      );
+      const enrichedListing = {
+        ...listing,
+        sellerId: itemSeller.sellerId,
+        sellerName: itemSeller.sellerName,
+        sellerUrl: itemSeller.sellerUrl,
+      };
+
+      enrichedListings.push(enrichedListing);
+    } catch (error) {
+      if (error instanceof TemporaryTabCleanupError) {
+        throw error;
+      }
+
+      console.error(
+        `NINA could not enrich catalog listing ${listing.itemId}.`,
+        error,
+      );
+      failures.push({
+        itemId: listing.itemId,
+        itemUrl: listing.itemUrl,
+      });
+    }
+  }
+
+  return buildCatalogSearchResult(
+    requestedItem,
+    catalogResponse,
+    listingsToProcess,
+    enrichedListings,
+    failures,
+  );
+}
+
+function intersectSearchSellers(searchResults) {
+  const [firstSearch, secondSearch] = searchResults;
+  const secondSellersById = new Map(
+    secondSearch.sellers.map((seller) => [seller.sellerId, seller]),
+  );
+  const matchingSellers = [];
+
+  for (const firstSeller of firstSearch.sellers) {
+    const secondSeller = secondSellersById.get(firstSeller.sellerId);
+
+    if (!secondSeller) {
+      continue;
+    }
+
+    matchingSellers.push({
+      sellerId: firstSeller.sellerId,
+      sellerName: firstSeller.sellerName,
+      sellerUrl: firstSeller.sellerUrl,
+      matches: [
+        {
+          requestedItem: firstSearch.requestedItem,
+          listings: firstSeller.listings.map((listing) => ({ ...listing })),
+        },
+        {
+          requestedItem: secondSearch.requestedItem,
+          listings: secondSeller.listings.map((listing) => ({ ...listing })),
+        },
+      ],
+    });
+  }
+
+  return matchingSellers;
+}
+
+function createSearchSummary(searchResult) {
+  return {
+    requestedItem: searchResult.requestedItem,
+    processedCount: searchResult.processedCount,
+    successCount: searchResult.successCount,
+    failureCount: searchResult.failureCount,
+    sellerCount: searchResult.sellerCount,
+  };
+}
+
+async function searchRequestedItems(requestedItems, windowId) {
+  if (isSearchingRequestedItems) {
     return {
       ok: false,
-      error: "NINA is already processing catalog listings.",
+      error: "NINA is already searching the requested items.",
     };
   }
 
-  isEnrichingCatalogBatch = true;
+  isSearchingRequestedItems = true;
 
   try {
-    const listingsToProcess = catalogResponse.listings.slice(
-      0,
-      MAX_LISTINGS_PER_RUN,
-    );
-    const enrichedListings = [];
-    const failures = [];
+    const searchResults = [];
 
-    for (const listing of listingsToProcess) {
+    for (const requestedItem of requestedItems) {
+      let catalogResponse;
+
       try {
-        if (!isValidCatalogListing(listing)) {
-          throw new Error("The catalog listing is invalid.");
-        }
-
-        const itemSeller = await extractSellerFromTemporaryTab(
-          listing,
+        catalogResponse = await extractCatalogFromTemporaryTab(
+          requestedItem,
           windowId,
         );
-        const enrichedListing = {
-          ...listing,
-          sellerId: itemSeller.sellerId,
-          sellerName: itemSeller.sellerName,
-          sellerUrl: itemSeller.sellerUrl,
-        };
-
-        enrichedListings.push(enrichedListing);
       } catch (error) {
         console.error(
-          `NINA could not enrich catalog listing ${listing.itemId}.`,
+          `NINA could not process catalog search for "${requestedItem}".`,
           error,
         );
-        failures.push({
-          itemId: listing.itemId,
-          itemUrl: listing.itemUrl,
-        });
+        return {
+          ok: false,
+          error: "NINA could not process one of the requested searches.",
+        };
       }
+
+      const searchResult = await processCatalogSearch(
+        requestedItem,
+        catalogResponse,
+        windowId,
+      );
+
+      if (searchResult.successCount === 0) {
+        return {
+          ok: false,
+          error:
+            "NINA could not read sellers for one of the requested searches.",
+        };
+      }
+
+      searchResults.push(searchResult);
     }
 
-    const batchResult = buildCatalogBatchResult(
-      listingsToProcess,
-      enrichedListings,
-      failures,
+    const matchingSellers = intersectSearchSellers(searchResults);
+    const intersectionResult = {
+      requestedItems: [...requestedItems],
+      searches: searchResults,
+      matchingSellerCount: matchingSellers.length,
+      matchingSellers,
+    };
+
+    console.log(
+      "NINA completed requested-item seller intersection:",
+      intersectionResult,
     );
-
-    console.log("NINA enriched Vinted catalog batch:", batchResult);
-
-    if (batchResult.successCount === 0) {
-      return {
-        ok: false,
-        error:
-          "NINA could not read sellers from the selected catalog listings.",
-      };
-    }
 
     return {
       ok: true,
-      resultType: RESULT_TYPES.CATALOG_BATCH_ENRICHED,
-      itemCount: requestedItemCount,
-      listingCount: catalogResponse.listings.length,
-      processedCount: batchResult.processedCount,
-      successCount: batchResult.successCount,
-      failureCount: batchResult.failureCount,
-      sellerCount: batchResult.sellerCount,
+      resultType: RESULT_TYPES.SELLER_INTERSECTION_COMPLETE,
+      itemCount: requestedItems.length,
+      searchCount: searchResults.length,
+      searches: searchResults.map(createSearchSummary),
+      matchingSellerCount: matchingSellers.length,
+    };
+  } catch (error) {
+    console.error("NINA could not complete the requested-item searches.", error);
+    return {
+      ok: false,
+      error: "NINA could not process one of the requested searches.",
     };
   } finally {
-    isEnrichingCatalogBatch = false;
+    isSearchingRequestedItems = false;
   }
 }
 
@@ -496,17 +666,8 @@ async function handleCreateSearchRequest(message) {
       };
     }
 
-    if (validateCatalogResponse(response, validation.items.length)) {
-      console.log(
-        "NINA background received Vinted catalog listings:",
-        response.listings,
-      );
-
-      return enrichCatalogBatch(
-        response,
-        validation.items.length,
-        activeTab.windowId,
-      );
+    if (validateCatalogReadyResponse(response)) {
+      return searchRequestedItems(validation.items, activeTab.windowId);
     }
 
     if (validateItemSellerResponse(response, validation.items.length)) {

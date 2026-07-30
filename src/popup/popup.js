@@ -8,9 +8,8 @@ const MESSAGE_TYPES = {
 };
 
 const RESULT_TYPES = {
-  CATALOG_LISTINGS: "CATALOG_LISTINGS",
   ITEM_SELLER: "ITEM_SELLER",
-  CATALOG_BATCH_ENRICHED: "CATALOG_BATCH_ENRICHED",
+  SELLER_INTERSECTION_COMPLETE: "SELLER_INTERSECTION_COMPLETE",
 };
 
 let nextItemId = 3;
@@ -77,8 +76,8 @@ function findDuplicateItems(items) {
 }
 
 function validateItems(items) {
-  if (items.length < 2) {
-    return "Enter at least two items.";
+  if (items.length !== 2) {
+    return "Enter exactly two items.";
   }
 
   if (findDuplicateItems(items).length > 0) {
@@ -93,11 +92,48 @@ function setStatus(message, isError = false) {
   status.classList.toggle("error", isError);
 }
 
-function formatCatalogBatchStatus(response) {
-  const listingLabel = response.processedCount === 1 ? "listing" : "listings";
-  const sellerLabel = response.sellerCount === 1 ? "seller" : "sellers";
+function isValidSearchSummary(summary, requestedItem) {
+  const expectedKeys = [
+    "requestedItem",
+    "processedCount",
+    "successCount",
+    "failureCount",
+    "sellerCount",
+  ];
 
-  return `Processed ${response.processedCount} ${listingLabel}: ${response.successCount} succeeded, ${response.failureCount} failed, ${response.sellerCount} unique ${sellerLabel}.`;
+  return (
+    summary !== null &&
+    typeof summary === "object" &&
+    !Array.isArray(summary) &&
+    Object.keys(summary).length === expectedKeys.length &&
+    expectedKeys.every((key) =>
+      Object.prototype.hasOwnProperty.call(summary, key),
+    ) &&
+    typeof summary.requestedItem === "string" &&
+    summary.requestedItem.trim().length > 0 &&
+    summary.requestedItem === requestedItem &&
+    Number.isInteger(summary.processedCount) &&
+    summary.processedCount >= 1 &&
+    summary.processedCount <= 5 &&
+    Number.isInteger(summary.successCount) &&
+    summary.successCount > 0 &&
+    summary.successCount <= summary.processedCount &&
+    Number.isInteger(summary.failureCount) &&
+    summary.failureCount >= 0 &&
+    summary.successCount + summary.failureCount === summary.processedCount &&
+    Number.isInteger(summary.sellerCount) &&
+    summary.sellerCount > 0 &&
+    summary.sellerCount <= summary.successCount
+  );
+}
+
+function formatSellerIntersectionStatus(matchingSellerCount) {
+  if (matchingSellerCount === 0) {
+    return "No common sellers found in the processed listings.";
+  }
+
+  const sellerLabel = matchingSellerCount === 1 ? "seller" : "sellers";
+  return `Found ${matchingSellerCount} ${sellerLabel} with listings in both processed searches.`;
 }
 
 async function handleSubmit(event) {
@@ -131,35 +167,32 @@ async function handleSubmit(event) {
 
     if (
       response.ok === true &&
-      response.resultType === RESULT_TYPES.CATALOG_BATCH_ENRICHED &&
-      Number.isInteger(response.itemCount) &&
-      response.itemCount >= 2 &&
-      Number.isInteger(response.listingCount) &&
-      response.listingCount > 0 &&
-      Number.isInteger(response.processedCount) &&
-      response.processedCount >= 1 &&
-      response.processedCount <= 5 &&
-      response.processedCount <= response.listingCount &&
-      Number.isInteger(response.successCount) &&
-      response.successCount > 0 &&
-      response.successCount <= response.processedCount &&
-      Number.isInteger(response.failureCount) &&
-      response.failureCount >= 0 &&
-      response.successCount + response.failureCount ===
-        response.processedCount &&
-      Number.isInteger(response.sellerCount) &&
-      response.sellerCount > 0 &&
-      response.sellerCount <= response.successCount
+      response.resultType === RESULT_TYPES.SELLER_INTERSECTION_COMPLETE &&
+      response.itemCount === 2 &&
+      response.searchCount === 2 &&
+      Array.isArray(response.searches) &&
+      response.searches.length === 2 &&
+      response.searches.every((summary, index) =>
+        isValidSearchSummary(summary, items[index]),
+      ) &&
+      Number.isInteger(response.matchingSellerCount) &&
+      response.matchingSellerCount >= 0 &&
+      response.matchingSellerCount <=
+        Math.min(
+          response.searches[0].sellerCount,
+          response.searches[1].sellerCount,
+        )
     ) {
-      setStatus(formatCatalogBatchStatus(response));
+      setStatus(
+        formatSellerIntersectionStatus(response.matchingSellerCount),
+      );
       return;
     }
 
     if (
       response.ok === true &&
       response.resultType === RESULT_TYPES.ITEM_SELLER &&
-      Number.isInteger(response.itemCount) &&
-      response.itemCount >= 2 &&
+      response.itemCount === 2 &&
       typeof response.itemId === "string" &&
       /^\d+$/.test(response.itemId) &&
       typeof response.sellerName === "string" &&

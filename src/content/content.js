@@ -2,10 +2,12 @@ console.log("NINA content script loaded on Vinted.");
 
 const MESSAGE_TYPES = {
   PREPARE_SEARCH: "PREPARE_SEARCH",
+  EXTRACT_CATALOG_LISTINGS: "EXTRACT_CATALOG_LISTINGS",
   EXTRACT_ITEM_SELLER: "EXTRACT_ITEM_SELLER",
 };
 
 const RESULT_TYPES = {
+  CATALOG_READY: "CATALOG_READY",
   CATALOG_LISTINGS: "CATALOG_LISTINGS",
   ITEM_SELLER: "ITEM_SELLER",
 };
@@ -54,10 +56,10 @@ function validatePrepareSearch(message) {
 
   const items = normalizeItems(message.items);
 
-  if (items.length < 2) {
+  if (items.length !== 2) {
     return {
       ok: false,
-      error: "At least two items are required.",
+      error: "Exactly two items are required.",
     };
   }
 
@@ -365,23 +367,10 @@ function extractItemSeller(itemPage) {
 }
 
 function handleCatalogPage(items) {
-  const listings = extractVisibleCatalogListings();
-
-  if (listings.length === 0) {
-    return Promise.resolve({
-      ok: false,
-      error: "NINA could not find loaded listings on this catalog page.",
-    });
-  }
-
-  console.log("NINA extracted Vinted catalog listings:", listings);
-
   return Promise.resolve({
     ok: true,
-    resultType: RESULT_TYPES.CATALOG_LISTINGS,
+    resultType: RESULT_TYPES.CATALOG_READY,
     itemCount: items.length,
-    listingCount: listings.length,
-    listings,
   });
 }
 
@@ -434,6 +423,36 @@ function handlePrepareSearchMessage(message) {
   return handlePrepareSearch(validation.items);
 }
 
+function handleExtractCatalogListingsMessage() {
+  if (!isCatalogPage()) {
+    return Promise.resolve({
+      ok: false,
+      error: "Open a Vinted catalog page before continuing.",
+    });
+  }
+
+  const listings = extractVisibleCatalogListings();
+
+  if (listings.length === 0) {
+    return Promise.resolve({
+      ok: false,
+      error: "NINA could not find loaded listings on this catalog page.",
+    });
+  }
+
+  console.log(
+    "NINA extracted listings from temporary catalog tab:",
+    listings,
+  );
+
+  return Promise.resolve({
+    ok: true,
+    resultType: RESULT_TYPES.CATALOG_LISTINGS,
+    listingCount: listings.length,
+    listings,
+  });
+}
+
 function handleExtractItemSellerMessage() {
   const itemPage = readCurrentItemPage();
 
@@ -476,6 +495,10 @@ function handleMessage(message) {
 
   if (message.type === MESSAGE_TYPES.PREPARE_SEARCH) {
     return handlePrepareSearchMessage(message);
+  }
+
+  if (message.type === MESSAGE_TYPES.EXTRACT_CATALOG_LISTINGS) {
+    return handleExtractCatalogListingsMessage();
   }
 
   if (message.type === MESSAGE_TYPES.EXTRACT_ITEM_SELLER) {
