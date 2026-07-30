@@ -3,7 +3,12 @@ const itemFields = document.querySelector("#item-fields");
 const addItemButton = document.querySelector("#add-item");
 const status = document.querySelector("#status");
 
+const MESSAGE_TYPES = {
+  CREATE_SEARCH_REQUEST: "CREATE_SEARCH_REQUEST",
+};
+
 let nextItemId = 3;
+let isSubmitting = false;
 
 function createItemField(itemNumber) {
   const field = document.createElement("div");
@@ -82,8 +87,12 @@ function setStatus(message, isError = false) {
   status.classList.toggle("error", isError);
 }
 
-function handleSubmit(event) {
+async function handleSubmit(event) {
   event.preventDefault();
+
+  if (isSubmitting) {
+    return;
+  }
 
   const items = readItems();
   const validationError = validateItems(items);
@@ -93,8 +102,37 @@ function handleSubmit(event) {
     return;
   }
 
-  setStatus("Items validated successfully.");
-  console.log("NINA validated items:", items);
+  isSubmitting = true;
+  setStatus("Sending items…");
+
+  try {
+    const response = await browser.runtime.sendMessage({
+      type: MESSAGE_TYPES.CREATE_SEARCH_REQUEST,
+      items,
+    });
+
+    if (response === null || typeof response !== "object") {
+      setStatus("NINA received an invalid background response.", true);
+      return;
+    }
+
+    if (response.ok === true) {
+      setStatus("Items received by the background script.");
+      return;
+    }
+
+    if (response.ok === false && typeof response.error === "string") {
+      setStatus(response.error, true);
+      return;
+    }
+
+    setStatus("NINA received an invalid background response.", true);
+  } catch (error) {
+    console.error("NINA background communication failed.", error);
+    setStatus("NINA could not contact the background script.", true);
+  } finally {
+    isSubmitting = false;
+  }
 }
 
 addItemButton.addEventListener("click", addItemField);
