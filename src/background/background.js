@@ -62,15 +62,15 @@ function handleMessage(message) {
   const validation = validateSearchRequest(message);
 
   if (!validation.ok) {
-    return validation;
+    return Promise.resolve(validation);
   }
 
   console.log("NINA background accepted items:", validation.items);
 
-  return {
+  return Promise.resolve({
     ok: true,
     itemCount: validation.items.length,
-  };
+  });
 }
 
 browser.runtime.onMessage.addListener(handleMessage);
